@@ -2232,7 +2232,7 @@ def process_frame(frame, verify_expected=False):
     return recognized_values, lamp_brightness_status
 
 
-def process_number_area(roi, display_frame, x1, y1, threshold_value=229):
+def process_number_area(roi, display_frame, x1, y1, threshold_value):
     """
     Processa l'area di riconoscimento numeri utilizzando l'implementazione Cython.
     Passa il threshold_value al modulo Cython se la funzione lo supporta.
