@@ -78,7 +78,7 @@ class AppState:
         self.slider_changed = False
         
         # OCR threshold per il riconoscimento numeri
-        self.ocr_threshold = 200
+        self.ocr_threshold = 240
         
         # Manteniamo solo il threshold per le lampade
         self.lamp_threshold = 10
@@ -1616,10 +1616,10 @@ def send_canalyzer_can_message(recognized_values, lamp_brightness_status):
         return False
 
 
-
 def send_can_message(dtc_params):
     """
     Sends a DM1 CAN message con registrazione dei dettagli solo al primo invio.
+    Replica esattamente la logica CAPL custom.
     """
     # Variabile statica per tracciare i DTC già inviati
     if not hasattr(send_can_message, 'sent_dtcs'):
@@ -1644,53 +1644,83 @@ def send_can_message(dtc_params):
             log_message(f"Source Address: 0x{sa:02X}")
             log_message("=======================================================")
             
-            # Aggiungi questo DTC alla lista di quelli già inviati
+            # Aggiungi questo DTC alla lista
             send_can_message.sent_dtcs.add(dtc_key)
         
-        # Calcola DTC code
-        spn_low = spn & 0xFF          # Least significant byte of SPN
-        spn_high = (spn >> 8) & 0xFF  # Most significant byte of SPN
-        dtc_code = (spn_low << 16) | (spn_high << 8) | fmi
+        # REPLICA ESATTA DELLA LOGICA CAPL generateDTC()
         
-        # Format DTC as a 6-digit hexadecimal string (3 bytes)
-        dtc_hex = f"{dtc_code:06X}"
+        # 1. SPN binary conversion
+        bits_spn = [0] * 19
+        for i in range(19-1, -1, -1):
+            bits_spn[19-1-i] = 1 if (spn & (1 << i)) else 0
         
-        # Extract the 3 bytes of DTC in big-endian format
-        dtc_bytes = [
-            (dtc_code >> 16) & 0xFF,  # Most significant byte (MSB)
-            (dtc_code >> 8) & 0xFF,   # Middle byte
-            dtc_code & 0xFF           # Least significant byte (LSB)
-        ]
+        # 2. Split SPN in 3+8+8 bit sequence
+        SPN_3bit_H = bits_spn[0:3]
+        SPN_8bit_M = bits_spn[3:11]
+        SPN_8bit_L = bits_spn[11:19]
+        
+        # 3. FMI binary conversion
+        FMI = [0] * 5
+        for i in range(5-1, -1, -1):
+            FMI[5-1-i] = 1 if (fmi & (1 << i)) else 0
+        
+        # 4. DTC2Byte creation: SPN_8bit_L + SPN_8bit_M
+        DTC2Byte = [0] * 16
+        for i in range(8):
+            DTC2Byte[i] = SPN_8bit_L[i]
+        for i in range(8):
+            DTC2Byte[8 + i] = SPN_8bit_M[i]
+        
+        # 5. FaultType1Byte: SPN_3bit_H + FMI
+        FaultType1Byte = [0] * 8
+        for i in range(3):
+            FaultType1Byte[i] = SPN_3bit_H[i]
+        for i in range(5):
+            FaultType1Byte[3 + i] = FMI[i]
+        
+        # 6. DTC3Byte: DTC2Byte + FaultType1Byte
+        bits_dtc = [0] * 32
+        for i in range(16):
+            bits_dtc[i] = DTC2Byte[i]
+        for i in range(8):
+            bits_dtc[16 + i] = FaultType1Byte[i]
+        
+        # 7. BinToHex conversion
+        dtc_generated = 0
+        for i in range(len(bits_dtc)):
+            b = 1 if bits_dtc[i] == 1 else 0
+            dtc_generated = (dtc_generated << 1) | b
         
         # Build extended CAN ID
         pgn = 0xFECA
         priority = 6
-        source_address = sa
-        
-        # Build extended CAN ID
-        arb_id = (priority << 26) | (pgn << 8) | source_address
+        arb_id = (priority << 26) | (pgn << 8) | sa
         
         # Initialize message with 8 bytes
         data = [0x00] * 8
         
         # Handle lamps in first byte
         if lamp_status == "AMBER":
-            data[0] |= (1 << 2)  
+            data[0] |= (1 << 2)
         elif lamp_status == "RED":
             data[0] |= (1 << 4)
         
-        # Set DTC bytes starting from byte 2
-        data[2] = dtc_bytes[0]  # First byte of DTC (MSB)
-        data[3] = dtc_bytes[1]  # Second byte of DTC
-        data[4] = dtc_bytes[2]  # Third byte of DTC (LSB)
+        # Byte 1: Reserved
+        data[1] = 0xFF
         
-        # Set Source Address in byte 6
+        # Set DTC bytes (replica CAPL sendDTC)
+        data[2] = (dtc_generated >> 24) & 0xFF
+        data[3] = (dtc_generated >> 16) & 0xFF
+        data[4] = (dtc_generated >> 8) & 0xFF
+        data[5] = dtc_generated & 0xFF
+        
+        # Set Source Address
         data[6] = sa
         
-        # Format data bytes in hex for display
-        hex_data = ' '.join(f'{b:02X}' for b in data)
+        # Byte 7: Reserved
+        data[7] = 0xFF
         
-        # Connect to CAN bus using our helper function
+        # Connect to CAN bus
         bus = create_can_bus('vector', can_channel_var.get(), int(can_bitrate_var.get()))
         
         try:
@@ -1705,21 +1735,20 @@ def send_can_message(dtc_params):
             # Send message
             bus.send(msg)
             
-            # Rimuovi il log dettagliato ad ogni invio
             app.can_message_counter += 1
-            
             return True
             
         except can.CanError as e:
             log_message(f"CAN send error: {str(e)}")
             return False
         finally:
-            # Close connection
             bus.shutdown()
-                
+        
     except Exception as e:
         log_message(f"Error preparing CAN message: {str(e)}")
         return False
+
+
 
 def start_recognition():
     """Starts the process of waiting for the CAN message"""
@@ -2846,7 +2875,7 @@ def initialize_application():
     app.current_dtc_index = 0
     app.dm1_thread_running = False
     app.dm1_thread = None
-    app.ocr_threshold = 229
+    app.ocr_threshold = 240
     #log_time("Dopo inizializzazione DTC Test properties")
     
     # Inizializza il flag di riconoscimento principale
@@ -4038,6 +4067,8 @@ class DTCAutoTestFrame(tk.Frame):
                                           font=("Arial", 9), fg="blue")
         self.test_status_label.pack(fill="x", padx=5, pady=2)
 
+        self.create_manual_dtc_widgets()
+
     def clear_errors(self):
         """Clear the log"""
         self.errors_text.delete(1.0, tk.END)
@@ -4070,7 +4101,223 @@ class DTCAutoTestFrame(tk.Frame):
             return True
         return False
 
+    def create_manual_dtc_widgets(self):
+        """
+        Aggiunge la sezione Manual DTC Sender all'interfaccia esistente
+        """
+        # Frame per Manual DTC Sender - Posizionato dopo ASC Player
+        manual_dtc_frame = tk.LabelFrame(self, text="Manual DTC Sender", font=("Arial", 9, "bold"))
+        manual_dtc_frame.pack(fill="x", padx=5, pady=5)
         
+        # Frame per input parametri - Layout compatto
+        params_frame = tk.Frame(manual_dtc_frame)
+        params_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Prima riga: SPN e FMI
+        row1_frame = tk.Frame(params_frame)
+        row1_frame.pack(fill="x", pady=2)
+        
+        # SPN Input
+        tk.Label(row1_frame, text="SPN:", font=("Arial", 8)).pack(side="left")
+        self.manual_spn_var = tk.StringVar(value="520313")
+        spn_entry = tk.Entry(row1_frame, textvariable=self.manual_spn_var, width=8, font=("Arial", 8))
+        spn_entry.pack(side="left", padx=2)
+        
+        # FMI Input
+        tk.Label(row1_frame, text="FMI:", font=("Arial", 8)).pack(side="left", padx=(10, 0))
+        self.manual_fmi_var = tk.StringVar(value="14")
+        fmi_entry = tk.Entry(row1_frame, textvariable=self.manual_fmi_var, width=4, font=("Arial", 8))
+        fmi_entry.pack(side="left", padx=2)
+        
+        # Lamp Selection
+        tk.Label(row1_frame, text="Lamp:", font=("Arial", 8)).pack(side="left", padx=(10, 0))
+        self.manual_lamp_var = tk.StringVar(value="NONE")
+        lamp_combo = ttk.Combobox(row1_frame, textvariable=self.manual_lamp_var,
+                                 values=["NONE", "AMBER", "RED"], 
+                                 state="readonly", width=6, font=("Arial", 8))
+        lamp_combo.pack(side="left", padx=2)
+        
+        # Source Address
+        tk.Label(row1_frame, text="SA:", font=("Arial", 8)).pack(side="left", padx=(10, 0))
+        self.manual_sa_var = tk.StringVar(value="0")
+        sa_entry = tk.Entry(row1_frame, textvariable=self.manual_sa_var, width=4, font=("Arial", 8))
+        sa_entry.pack(side="left", padx=2)
+                
+        # Terza riga: Controlli di invio
+        row3_frame = tk.Frame(params_frame)
+        row3_frame.pack(fill="x", pady=5)
+        
+        # Pulsante Send
+        self.manual_send_btn = tk.Button(row3_frame, text="📤 Send DTC", 
+                                        command=self.send_manual_dtc,
+                                        font=("Arial", 8, "bold"),
+                                        bg="#8cff8c", width=12, height=1)
+        self.manual_send_btn.pack(side="left", padx=2)
+        
+        # Pulsante Send 3x
+        self.manual_send_3x_btn = tk.Button(row3_frame, text="🔄 Send 3x", 
+                                           command=self.send_manual_dtc_multiple,
+                                           font=("Arial", 8),
+                                           bg="#ffcc8c", width=10, height=1)
+        self.manual_send_3x_btn.pack(side="left", padx=2)
+        
+        # Pulsante Validate
+        validate_btn = tk.Button(row3_frame, text="✓ Check", 
+                               command=self.validate_manual_dtc,
+                               font=("Arial", 8),
+                               bg="#8cccff", width=8, height=1)
+        validate_btn.pack(side="left", padx=2)
+        
+        # Status label compatto
+        self.manual_status_label = tk.Label(row3_frame, text="Ready", 
+                                           fg="blue", font=("Arial", 7))
+        self.manual_status_label.pack(side="right", padx=5)
+
+    def load_manual_preset(self, spn, fmi, lamp, sa):
+        """Carica un preset nei campi manuali"""
+        self.manual_spn_var.set(str(spn))
+        self.manual_fmi_var.set(str(fmi))
+        self.manual_lamp_var.set(lamp)
+        self.manual_sa_var.set(str(sa))
+        self.manual_status_label.config(text=f"Loaded: SPN={spn}, FMI={fmi}", fg="blue")
+
+    def validate_manual_dtc(self):
+        """Valida i valori DTC manuali"""
+        try:
+            spn = int(self.manual_spn_var.get())
+            fmi = int(self.manual_fmi_var.get())
+            sa = int(self.manual_sa_var.get())
+            lamp = self.manual_lamp_var.get()
+            
+            errors = []
+            
+            # Valida SPN
+            if not (SPN_MIN <= spn <= SPN_MAX):
+                errors.append(f"SPN {spn} out of range")
+            
+            # Valida FMI
+            if not (FMI_MIN <= fmi <= FMI_MAX):
+                errors.append(f"FMI {fmi} out of range")
+            
+            # Valida SA
+            if not (0 <= sa <= 255):
+                errors.append(f"SA {sa} out of range")
+            
+            if errors:
+                self.manual_status_label.config(text="❌ " + "; ".join(errors), fg="red")
+                return False
+            else:
+                self.manual_status_label.config(text="✅ Valid values", fg="green")
+                return True
+                
+        except ValueError:
+            self.manual_status_label.config(text="❌ Invalid number format", fg="red")
+            return False
+
+    def send_manual_dtc(self):
+        """Invia un DTC manuale"""
+        if not self.validate_manual_dtc():
+            return
+        
+        try:
+            # Prepara i parametri
+            dtc_params = {
+                "SPN": int(self.manual_spn_var.get()),
+                "FMI": int(self.manual_fmi_var.get()),
+                "LAMP": self.manual_lamp_var.get(),
+                "SA": int(self.manual_sa_var.get())
+            }
+            
+            # Disabilita il pulsante durante l'invio
+            self.manual_send_btn.config(state="disabled")
+            self.manual_status_label.config(text="📤 Sending...", fg="orange")
+            
+            # Invia in un thread separato
+            def send_thread():
+                try:
+                    success = send_can_message(dtc_params)
+                    
+                    # Aggiorna UI nel thread principale
+                    if success:
+                        root.after(0, lambda: self.manual_status_label.config(
+                            text=f"✅ Sent: SPN={dtc_params['SPN']}, FMI={dtc_params['FMI']}", fg="green"))
+                        root.after(0, lambda: log_message(f"Manual DTC sent: {dtc_params}"))
+                    else:
+                        root.after(0, lambda: self.manual_status_label.config(
+                            text="❌ Send failed", fg="red"))
+                
+                except Exception as e:
+                    root.after(0, lambda: self.manual_status_label.config(
+                        text=f"❌ Error: {str(e)[:20]}...", fg="red"))
+                finally:
+                    # Riabilita il pulsante
+                    root.after(0, lambda: self.manual_send_btn.config(state="normal"))
+            
+            # Avvia il thread
+            threading.Thread(target=send_thread, daemon=True).start()
+            
+        except Exception as e:
+            self.manual_send_btn.config(state="normal")
+            self.manual_status_label.config(text="❌ Send error", fg="red")
+
+    def send_manual_dtc_multiple(self):
+        """Invia lo stesso DTC 3 volte"""
+        if not self.validate_manual_dtc():
+            return
+        
+        try:
+            # Prepara i parametri
+            dtc_params = {
+                "SPN": int(self.manual_spn_var.get()),
+                "FMI": int(self.manual_fmi_var.get()),
+                "LAMP": self.manual_lamp_var.get(),
+                "SA": int(self.manual_sa_var.get())
+            }
+            
+            # Disabilita i pulsanti
+            self.manual_send_btn.config(state="disabled")
+            self.manual_send_3x_btn.config(state="disabled")
+            
+            def send_multiple_thread():
+                try:
+                    for i in range(3):
+                        # Aggiorna status
+                        root.after(0, lambda i=i: self.manual_status_label.config(
+                            text=f"📤 Sending {i+1}/3...", fg="orange"))
+                        
+                        # Invia messaggio
+                        success = send_can_message(dtc_params)
+                        
+                        if not success:
+                            root.after(0, lambda i=i: self.manual_status_label.config(
+                                text=f"❌ Failed at {i+1}/3", fg="red"))
+                            return
+                        
+                        # Pausa tra i messaggi
+                        if i < 2:
+                            time.sleep(1)
+                    
+                    # Successo
+                    root.after(0, lambda: self.manual_status_label.config(
+                        text=f"✅ 3x sent: SPN={dtc_params['SPN']}, FMI={dtc_params['FMI']}", fg="green"))
+                    root.after(0, lambda: log_message(f"Manual DTC sent 3x: {dtc_params}"))
+                
+                except Exception as e:
+                    root.after(0, lambda: self.manual_status_label.config(
+                        text=f"❌ Error: {str(e)[:15]}...", fg="red"))
+                finally:
+                    # Riabilita i pulsanti
+                    root.after(0, lambda: self.manual_send_btn.config(state="normal"))
+                    root.after(0, lambda: self.manual_send_3x_btn.config(state="normal"))
+            
+            # Avvia il thread
+            threading.Thread(target=send_multiple_thread, daemon=True).start()
+            
+        except Exception as e:
+            self.manual_send_btn.config(state="normal")
+            self.manual_send_3x_btn.config(state="normal")
+            self.manual_status_label.config(text="❌ Multiple send error", fg="red")
+
 
 # ====== Main Application UI Setup ======
 if __name__ == "__main__":
@@ -4206,7 +4453,7 @@ if __name__ == "__main__":
     ocr_threshold_slider = tk.Scale(webcam_direct_frame, from_=0, to=255, orient="horizontal", 
                                    command=update_ocr_threshold, label="OCR Threshold (Start Live to see changes)", 
                                    length=150, font=('Arial', 8))
-    ocr_threshold_slider.set(200)  # Valore predefinito medio
+    ocr_threshold_slider.set(240)  # Valore predefinito medio
     ocr_threshold_slider.pack(fill="x", padx=5)
 
     # Frame for CAN parameters  
