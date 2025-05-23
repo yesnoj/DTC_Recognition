@@ -16,6 +16,12 @@ import time
 START_TIME = time.time()
 TIME_LOGS = []  # Lista per memorizzare i log temporanei
 
+# Costanti SAE J1939 per validazione
+SPN_MIN = 1       # Il valore minimo per SPN è 1
+SPN_MAX = 524287  # Il valore massimo per SPN è 524287 (2^19-1)
+FMI_MIN = 0       # Il valore minimo per FMI è 0
+FMI_MAX = 31      # Il valore massimo per FMI è 31
+
 # Set Tesseract path
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '/cython_modules')
@@ -61,10 +67,10 @@ class AppState:
         self.last_recognition_values = None
         
         # Parametri webcam diretti
-        self.webcam_contrast = 10
+        self.webcam_contrast = 20
         self.webcam_saturation = 0
         self.webcam_exposure = -8
-        self.webcam_focus = 0 
+        self.webcam_focus = 73 
         self.webcam_initialized = False
         
         # Proprietà per la Live View
@@ -72,10 +78,10 @@ class AppState:
         self.slider_changed = False
         
         # OCR threshold per il riconoscimento numeri
-        self.ocr_threshold = 229
+        self.ocr_threshold = 200
         
         # Manteniamo solo il threshold per le lampade
-        self.lamp_threshold = 150
+        self.lamp_threshold = 10
         
         # Riferimento al pannello di threshold preview
         self.threshold_preview_panel = None
@@ -2057,6 +2063,7 @@ def add_number_recognition_debug(frame, x1, y1, x2, y2, area_type, slot_number, 
 def process_frame(frame, verify_expected=False):
     """
     Processa il frame catturato per riconoscimento numeri e stato lampade.
+    Versione aggiornata con riconoscimento SPN/FMI ottimizzato.
     
     Args:
         frame: Il frame catturato dalla webcam
@@ -2120,10 +2127,13 @@ def process_frame(frame, verify_expected=False):
         
         if area_type == "Number":
             # Log prima del riconoscimento
-            log_message(f"Processing {slot_number == 1 and 'SPN' or 'FMI'} area ({x1},{y1})-({x2},{y2})")
+            area_name = "SPN" if slot_number == 1 else "FMI"
+            log_message(f"Processing {area_name} area ({x1},{y1})-({x2},{y2})")
             
-            # Chiama la funzione di riconoscimento con la threshold corrente
-            recognized_value = process_number_area(roi, display_frame, x1, y1, ocr_threshold)
+            # USA LA FUNZIONE OTTIMIZZATA per SPN/FMI
+            recognized_value = process_number_area_optimized(
+                roi, display_frame, x1, y1, ocr_threshold, area_type, slot_number
+            )
             
             # Assegna il valore riconosciuto in base al numero di slot
             if recognized_value is not None:
@@ -2133,6 +2143,7 @@ def process_frame(frame, verify_expected=False):
                     recognized_values['FMI'] = recognized_value
             
         elif area_type == "Lamp":
+            # Processa le aree delle lampade (rimane uguale)
             is_bright, luminosity = process_lamp_area(roi, display_frame, x1, y1, x2, y2, lamp_threshold)
             
             # Aggiorna lo stato delle lampade in base al numero di slot
@@ -2231,138 +2242,215 @@ def process_frame(frame, verify_expected=False):
     
     return recognized_values, lamp_brightness_status
 
-
-def process_number_area(roi, display_frame, x1, y1, threshold_value):
+def process_number_area_optimized(roi, display_frame, x1, y1, threshold_value, area_type="Unknown", slot_number=1):
     """
-    Processa l'area di riconoscimento numeri utilizzando l'implementazione Cython.
-    Passa il threshold_value al modulo Cython se la funzione lo supporta.
+    Riconoscimento numeri ottimizzato per SPN e FMI con validazione range-specific
+    
+    Args:
+        roi: Region of interest (area selezionata dall'immagine)
+        display_frame: Frame su cui disegnare le informazioni di debug
+        x1, y1: Coordinate dell'angolo in alto a sinistra dell'area
+        threshold_value: Valore di threshold per la binarizzazione (da slider)
+        area_type: "Number" per aree numeriche
+        slot_number: 1 per SPN, 2 per FMI
+        
+    Returns:
+        int or None: Il numero riconosciuto e validato o None se fallisce
     """
     try:
-        # Tenta di utilizzare l'implementazione Cython
-        import number_recognition
-        #log_message("Using Cython implementation for number recognition")
+        # Determina il tipo di numero da riconoscere
+        is_spn = (area_type == "Number" and slot_number == 1)
+        is_fmi = (area_type == "Number" and slot_number == 2)
         
-        # Verifica se la funzione Cython accetta il parametro threshold_value
-        import inspect
-        sig = inspect.signature(number_recognition.process_number_area)
-        params = list(sig.parameters.keys())
-        
-        # Se la funzione Cython ha il parametro threshold_value, passalo
-        if len(params) >= 5 and 'threshold_value' in params:
-            result = number_recognition.process_number_area(roi, display_frame, x1, y1, threshold_value)
-            #log_message(f"OCR recognition with threshold: {threshold_value}")
+        # Imposta i range di validazione
+        if is_spn:
+            min_val, max_val = SPN_MIN, SPN_MAX
+            area_name = "SPN"
+        elif is_fmi:
+            min_val, max_val = FMI_MIN, FMI_MAX
+            area_name = "FMI"
         else:
-            # Altrimenti usa la vecchia firma (compatibilità con versioni non aggiornate)
-            result = number_recognition.process_number_area(roi, display_frame, x1, y1)
-            #log_message("OCR recognition with default threshold (Cython module needs recompilation)")
+            min_val, max_val = 0, 999999
+            area_name = "Generic"
         
-        # Se otteniamo un risultato, aggiungi un rettangolo verde nel frame di display
-        if result is not None:
-            # Calcoliamo le coordinate del rettangolo nell'immagine originale
-            height, width = roi.shape[:2]
-            cv2.rectangle(display_frame, (x1, y1), (x1 + width, y1 + height), (0, 255, 0), 2)
-            
-            # Aggiungi il testo con il valore riconosciuto
-            cv2.putText(display_frame, f"Value: {result}", (x1, y1 - 5),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            
-        return result
-    except ImportError as e:
-        # Se il modulo Cython non è disponibile, usa l'implementazione Python pura
-        log_message(f"Cython implementation not available: {str(e)}")
-        log_message("Using Python-only implementation for number recognition")
-        
-        return process_number_area_python(roi, display_frame, x1, y1, threshold_value)
-    except Exception as e:
-        # Altre eccezioni (errori durante l'esecuzione della funzione Cython)
-        log_message(f"ERROR in number recognition: {str(e)}")
-        return None
-
-def process_number_area_python(roi, display_frame, x1, y1, threshold_value=229):
-    """
-    Implementazione Python pura per il riconoscimento numeri come fallback.
-    Utilizzata quando il modulo Cython non è disponibile o ha errori.
-    """
-    try:
-        # Conversione a scala di grigi
+        # Step 1: Conversione a scala di grigi
         if roi.ndim == 3 and roi.shape[2] == 3:
             roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         elif roi.ndim == 2:
             roi_gray = roi
         else:
-            log_message("Error: Input image must be 2D (grayscale) or 3D (color)")
+            log_message(f"ERROR: Input image must be 2D or 3D for {area_name}")
             return None
         
-        # Ridimensionamento per migliorare il riconoscimento
-        scale_factor = 4.0
-        roi_resized = cv2.resize(roi_gray, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
+        # Step 2: Ridimensionamento adattivo basato sul tipo di numero
+        height, width = roi_gray.shape
         
-        # Equalizzazione dell'istogramma per migliorare il contrasto
-        roi_equalized = cv2.equalizeHist(roi_resized)
+        if is_fmi:
+            # FMI: numeri piccoli (0-31), aumentiamo di più il ridimensionamento
+            min_target_size = 80
+            scale_factor = max(min_target_size / min(width, height), 4.0)
+        else:  # SPN o generico
+            # SPN: numeri più grandi, ridimensionamento standard
+            min_target_size = 60
+            scale_factor = max(min_target_size / min(width, height), 3.0)
         
-        # Applicazione del threshold globale con il valore passato
+        scale_factor = min(scale_factor, 8.0)  # Limite massimo
+        
+        roi_resized = cv2.resize(roi_gray, None, fx=scale_factor, fy=scale_factor, 
+                               interpolation=cv2.INTER_CUBIC)
+        
+        # Step 3: Preprocessing specifico per tipo di numero
+        if is_fmi:
+            # FMI: preprocessing più aggressivo per numeri piccoli
+            roi_smooth = cv2.GaussianBlur(roi_resized, (5, 5), 0)
+            # Miglioramento contrasto più marcato
+            roi_enhanced = cv2.convertScaleAbs(roi_smooth, alpha=1.8, beta=20)
+            roi_equalized = cv2.equalizeHist(roi_enhanced)
+        else:
+            # SPN: preprocessing standard
+            roi_smooth = cv2.GaussianBlur(roi_resized, (3, 3), 0)
+            roi_equalized = cv2.equalizeHist(roi_smooth)
+        
+        # Step 4: Binarizzazione
         _, roi_binary = cv2.threshold(roi_equalized, threshold_value, 255, cv2.THRESH_BINARY)
         
-        # Operazioni morfologiche per ridurre il rumore
-        kernel = np.ones((2, 2), dtype=np.uint8)
-        roi_binary = cv2.morphologyEx(roi_binary, cv2.MORPH_OPEN, kernel)
-        roi_binary = cv2.morphologyEx(roi_binary, cv2.MORPH_CLOSE, kernel)
+        # Step 5: Morphologia adattiva
+        if is_fmi:
+            # FMI: morfologia più leggera per preservare numeri piccoli
+            kernel_size = 2
+        else:
+            # SPN: morfologia standard
+            kernel_size = max(2, min(4, int(scale_factor / 2)))
         
-        # Configurazioni OCR ottimizzate per numeri
-        configs = [
-            "--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789",  # Singola riga di testo
-            "--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789",  # Singola parola
-            "--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789"  # Singolo carattere
-        ]
+        kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+        roi_clean = cv2.morphologyEx(roi_binary, cv2.MORPH_OPEN, kernel)
+        roi_clean = cv2.morphologyEx(roi_clean, cv2.MORPH_CLOSE, kernel)
         
-        best_confidence = 0.0
-        result_text = ""
+        # Step 6: OCR ottimizzato per tipo di numero
+        if is_fmi:
+            # FMI: configurazioni ottimizzate per numeri piccoli (0-31)
+            configs = [
+                ("PSM10", "--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789"),  # Singolo carattere
+                ("PSM8", "--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789"),   # Parola singola
+                ("PSM7", "--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789"),   # Riga singola
+            ]
+        else:
+            # SPN: configurazioni ottimizzate per numeri grandi (1-524287)
+            configs = [
+                ("PSM8", "--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789"),   # Parola singola
+                ("PSM7", "--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789"),   # Riga singola
+                ("PSM6", "--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789"),   # Blocco uniforme
+                ("PSM10", "--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789"), # Singolo carattere
+            ]
         
-        # Prova ciascuna configurazione e prendi il risultato migliore
-        for config in configs:
+        # Step 7: Riconoscimento con validazione specifica
+        valid_results = []  # Lista di risultati validi
+        
+        for config_name, config_string in configs:
             try:
-                # Riconoscimento con Tesseract
-                result_data = pytesseract.image_to_data(
-                    roi_binary,
-                    config=config,
-                    output_type=pytesseract.Output.DICT
-                )
+                result_data = pytesseract.image_to_data(roi_clean, config=config_string, 
+                                                      output_type=pytesseract.Output.DICT)
                 
-                # Filtraggio risultati
                 for j in range(len(result_data['text'])):
                     text = result_data['text'][j].strip()
                     conf = float(result_data['conf'][j]) if result_data['conf'][j] > 0 else 0
                     
-                    if text.isdigit() and conf > best_confidence:
-                        best_confidence = conf
-                        result_text = text
-            except Exception as e:
-                # Gestione silenziosa degli errori
-                pass
+                    # Verifica che sia un numero
+                    if text.isdigit() and conf > 0:
+                        try:
+                            value = int(text)
+                            
+                            # VALIDAZIONE SPECIFICA PER RANGE
+                            if min_val <= value <= max_val:
+                                # Calcola score di qualità
+                                quality_score = conf
+                                
+                                # Bonus per lunghezza appropriata
+                                if is_fmi and 1 <= len(text) <= 2:
+                                    quality_score *= 1.2  # FMI: 1-2 cifre
+                                elif is_spn and 1 <= len(text) <= 6:
+                                    quality_score *= 1.1  # SPN: 1-6 cifre
+                                
+                                # Bonus per configurazioni più accurate
+                                if config_name in ["PSM8", "PSM7"]:
+                                    quality_score *= 1.05
+                                
+                                valid_results.append({
+                                    'value': value,
+                                    'text': text,
+                                    'confidence': conf,
+                                    'quality_score': quality_score,
+                                    'config': config_name
+                                })
+                        
+                        except ValueError:
+                            continue
+            except:
+                continue
         
-        # Se abbiamo trovato un risultato con confidenza sufficiente
-        if best_confidence > 60 and result_text:  # Soglia di confidenza
-            try:
-                result_value = int(result_text)
+        # Step 8: Selezione del miglior risultato valido
+        if valid_results:
+            # Ordina per quality_score decrescente
+            valid_results.sort(key=lambda x: x['quality_score'], reverse=True)
+            best_result = valid_results[0]
+            
+            # Soglia di confidence adattiva
+            if is_fmi:
+                confidence_threshold = 60  # FMI: soglia più bassa
+            else:
+                confidence_threshold = 70  # SPN: soglia standard
+            
+            if best_result['quality_score'] >= confidence_threshold:
+                result_value = best_result['value']
                 
-                # Aggiungi informazioni di debug al frame di visualizzazione
-                height, width = roi.shape[:2]
-                cv2.rectangle(display_frame, (x1, y1), (x1 + width, y1 + height), (0, 255, 0), 2)
-                cv2.putText(display_frame, f"Value: {result_value} (Conf: {best_confidence:.1f}%)", 
-                           (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                # SUCCESS - Disegna indicatori di successo
+                roi_height, roi_width = roi.shape[:2]
+                cv2.rectangle(display_frame, (x1, y1), (x1 + roi_width, y1 + roi_height), (0, 255, 0), 2)
+                
+                # Testo di debug dettagliato
+                debug_text = f"{area_name}: {result_value} ({best_result['confidence']:.0f}%)"
+                cv2.putText(display_frame, debug_text, (x1, y1 - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                
+                # Log di successo con dettagli
+                log_message(f"✅ {area_name} SUCCESS: '{result_value}' "
+                          f"(conf: {best_result['confidence']:.1f}%, "
+                          f"quality: {best_result['quality_score']:.1f}, "
+                          f"config: {best_result['config']})")
                 
                 return result_value
-            except ValueError:
-                pass
+        
+        # FALLIMENTO - Nessun risultato valido nel range
+        roi_height, roi_width = roi.shape[:2]
+        cv2.rectangle(display_frame, (x1, y1), (x1 + roi_width, y1 + roi_height), (0, 0, 255), 2)
+        
+        # Testo di debug per fallimento
+        if valid_results:
+            # Abbiamo risultati ma confidence troppo bassa
+            best_invalid = max(valid_results, key=lambda x: x['confidence'])
+            debug_text = f"{area_name}: {best_invalid['value']} (LOW:{best_invalid['confidence']:.0f}%)"
+        else:
+            # Nessun risultato nel range valido
+            debug_text = f"{area_name}: OUT OF RANGE"
+        
+        cv2.putText(display_frame, debug_text, (x1, y1 - 5),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        
+        # Log di fallimento con dettagli
+        if valid_results:
+            log_message(f"❌ {area_name} FAILED: Miglior risultato qualità {valid_results[0]['quality_score']:.1f} < {confidence_threshold}")
+        else:
+            log_message(f"❌ {area_name} FAILED: Nessun numero trovato nel range {min_val}-{max_val}")
         
         return None
+        
     except Exception as e:
-        log_message(f"ERROR in Python OCR recognition: {str(e)}")
+        log_message(f"ERRORE CRITICO in OCR {area_name}: {str(e)}")
         return None
 
 
 def process_lamp_area(roi, display_frame, x1, y1, x2, y2, threshold):
-    """Processa un'area di lampada"""
+    """Processa un'area di lampada (rimane uguale alla versione originale)"""
     # Elabora le aree delle lampade
     avg_lamp = np.mean(roi, axis=(0,1)).astype(int).tolist()
     
@@ -2379,7 +2467,7 @@ def process_lamp_area(roi, display_frame, x1, y1, x2, y2, threshold):
     return is_bright, luminosity
 
 def add_lamp_info_to_frame(display_frame, x1, y1, lamp_name, luminosity, is_bright, threshold):
-    """Aggiunge informazioni sulla lampada al frame di display"""
+    """Aggiunge informazioni sulla lampada al frame di display (rimane uguale)"""
     # Aggiungi informazioni sulla luminosità e lo stato
     brightness_text = f"{lamp_name}: L:{int(luminosity)} Th:{threshold} ({'ON' if is_bright else 'OFF'})"
     
@@ -4090,7 +4178,7 @@ if __name__ == "__main__":
     webcam_contrast_slider = tk.Scale(webcam_direct_frame, from_=0, to=10, orient="horizontal", 
                                     command=update_webcam_contrast, label="Contrast", 
                                     length=150, font=('Arial', 8))
-    webcam_contrast_slider.set(10)  # Valore predefinito
+    webcam_contrast_slider.set(20)  # Valore predefinito
     webcam_contrast_slider.pack(fill="x", padx=5)
 
     # Slider saturazione webcam (tipicamente 0-200)
@@ -4111,14 +4199,14 @@ if __name__ == "__main__":
     webcam_focus_slider = tk.Scale(webcam_direct_frame, from_=0, to=255, orient="horizontal", 
                                  command=update_webcam_focus, label="Focus Distance", 
                                  length=150, font=('Arial', 8))
-    webcam_focus_slider.set(0)  # Default to minimum focus distance
+    webcam_focus_slider.set(73)  # Default to minimum focus distance
     webcam_focus_slider.pack(fill="x", padx=5)
 
     # Slider OCR threshold (valori tra 0-255)
     ocr_threshold_slider = tk.Scale(webcam_direct_frame, from_=0, to=255, orient="horizontal", 
                                    command=update_ocr_threshold, label="OCR Threshold (Start Live to see changes)", 
                                    length=150, font=('Arial', 8))
-    ocr_threshold_slider.set(229)  # Valore predefinito medio
+    ocr_threshold_slider.set(200)  # Valore predefinito medio
     ocr_threshold_slider.pack(fill="x", padx=5)
 
     # Frame for CAN parameters  
