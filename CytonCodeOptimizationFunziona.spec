@@ -11,7 +11,6 @@ a = Analysis(
         ('C:\\Program Files\\Tesseract-OCR\\tesseract.exe', 'tesseract'),
         ('C:\\Program Files\\Tesseract-OCR\\tessdata', 'tessdata'),
         # Include Cython modules directory
-        ('./cython_modules', 'cython_modules'),
         ('can.ico', '.'),
         ('can.png', '.'),
     ],
