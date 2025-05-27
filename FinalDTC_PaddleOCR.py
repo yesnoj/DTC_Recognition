@@ -301,12 +301,7 @@ def resource_path(relative_path):
 def execute_dtc_acquisition_with_screenshot(expected_index):
     """
     CORREZIONE: Evita acquisizioni multiple per lo stesso DTC
-    """
-    # Verifica che l'indice non sia cambiato (importante per evitare doppioni)
-    if app.current_dtc_index != expected_index:
-        log_message(f"Skipping acquisition for DTC {expected_index+1} - already processed")
-        return
-        
+    """        
     # *** AGGIUNTA: Controllo per evitare doppioni ***
     if hasattr(execute_dtc_acquisition_with_screenshot, 'last_processed_index'):
         if execute_dtc_acquisition_with_screenshot.last_processed_index == expected_index:
@@ -359,8 +354,7 @@ def execute_dtc_acquisition_with_screenshot(expected_index):
                     current_dtc = app.csv_data[expected_index]
                     verify_ff99_response(current_dtc, recognized_dtc, original_frame)
                 
-                # Avanza all'indice successivo
-                app.current_dtc_index += 1
+
             else:
                 log_message("Error: unable to capture frame from webcam")
         else:
@@ -500,7 +494,6 @@ def save_paddle_debug_for_mismatch(expected_dtc, screenshot_folder):
         log_message(f"Error copying paddle debug images: {str(e)}")
 
 
-
 def recognize_number_from_roi(roi, threshold=240, area_type="Number", slot_number=1):
     """Riconoscimento numeri con PaddleOCR standard - versione finale"""
     if not app.paddle_ocr or not app.paddle_initialized:
@@ -516,6 +509,7 @@ def recognize_number_from_roi(roi, threshold=240, area_type="Number", slot_numbe
         area_name = "SPN" if slot_number == 1 else "FMI"
         log_message(f"❌ {area_name} ERROR: {str(e)}")
         return None
+
 
 def start_recognition():
     """Starts the process of waiting for the CAN message"""
@@ -923,7 +917,7 @@ def safe_paddle_ocr_call(image):
         return None
 
 def recognize_with_paddle_ocr(roi, area_type, slot_number):
-    """Riconoscimento con PaddleOCR standard - versione finale"""
+    """Riconoscimento con PaddleOCR standard - versione finale con debug condizionale"""
     if not app.paddle_ocr:
         if not initialize_paddle_ocr():
             log_message("❌ PaddleOCR not available")
@@ -984,12 +978,13 @@ def recognize_with_paddle_ocr(roi, area_type, slot_number):
                     'validated_value': None
                 })
         
-        # SALVA SEMPRE le debug images
-        area_name = "SPN" if slot_number == 1 else "FMI" 
-        debug_folder = save_paddle_debug_images(debug_images, area_name, valid_results)
+        area_name = "SPN" if slot_number == 1 else "FMI"
         
-        if debug_folder:
-            log_message(f"🔍 Debug saved: {os.path.basename(debug_folder)}")
+        # SALVA debug images SOLO se non ci sono risultati validi (ERRORE OCR)
+        if not valid_results:
+            debug_folder = save_paddle_debug_images(debug_images, area_name, valid_results)
+            if debug_folder:
+                log_message(f"❌ OCR FAILED - {area_name} Debug saved: {os.path.basename(debug_folder)}")
         
         # Risultato migliore
         if valid_results:
@@ -1245,12 +1240,21 @@ def create_annotated_debug_image_robust(img, area_name, description, recognized_
 
 def save_paddle_debug_images(debug_images, area_name, results):
     """
-    VERSIONE MIGLIORATA - crea sempre le cartelle debug
+    VERSIONE MIGLIORATA - crea sempre le cartelle debug con SPN e FMI nel nome
     """
     try:
         # Crea cartella debug con timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        debug_dir = f"paddle_debug_{area_name}_{timestamp}"
+        
+        # Usa l'indice DTC corrente per identificare la cartella
+        current_dtc_info = ""
+        if hasattr(app, "csv_data") and app.current_dtc_index < len(app.csv_data):
+            current_dtc = app.csv_data[app.current_dtc_index]
+            spn = current_dtc.get("SPN", "unknown")
+            fmi = current_dtc.get("FMI", "unknown")
+            current_dtc_info = f"{spn}_{fmi}_"
+        
+        debug_dir = f"paddle_debug_{current_dtc_info}{area_name}_{timestamp}"
         
         # Usa percorso assoluto nella directory corrente
         current_dir = os.path.dirname(os.path.abspath(__file__))
