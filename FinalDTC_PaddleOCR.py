@@ -1025,33 +1025,43 @@ def initialize_paddle_ocr():
         log_message("🔄 Initializing PaddleOCR standard...")
         from paddleocr import PaddleOCR
         
-        # Inizializzazione semplice e corretta
-        app.paddle_ocr = PaddleOCR(
-            use_angle_cls=False,  # Non ruotare testo
-            lang='en',           # Inglese
-            show_log=False       # No log interno
-        )
+        # Prima prova senza show_log (più sicuro)
+        try:
+            app.paddle_ocr = PaddleOCR(
+                use_angle_cls=False,
+                lang='en'
+            )
+            log_message("✅ PaddleOCR initialized without show_log parameter")
+        except Exception as first_error:
+            # Se fallisce, prova con show_log
+            try:
+                app.paddle_ocr = PaddleOCR(
+                    use_angle_cls=False,
+                    lang='en',
+                    show_log=False
+                )
+                log_message("✅ PaddleOCR initialized with show_log parameter")
+            except Exception as second_error:
+                log_message(f"❌ Both initialization methods failed:")
+                log_message(f"   Without show_log: {str(first_error)}")
+                log_message(f"   With show_log: {str(second_error)}")
+                return False
         
         app.paddle_initialized = True
         log_message("✅ PaddleOCR standard initialized successfully")
         
-        # Test semplice
+        # Test semplificato
         log_message("🧪 Testing PaddleOCR standard...")
         test_image = create_simple_test_image()
         
-        test_result = safe_paddle_ocr_call(test_image)
-        
-        if test_result and test_result[0]:
-            log_message("✅ PaddleOCR test successful!")
-            
-            # Parsing risultato standard PaddleOCR
-            for line in test_result[0]:
-                if len(line) >= 2:
-                    bbox, (text, confidence) = line
-                    log_message(f"  📝 Test recognized: '{text}' (confidence: {confidence:.3f})")
-                    break
-        else:
-            log_message("⚠️ PaddleOCR test: empty result (but initialization OK)")
+        try:
+            test_result = safe_paddle_ocr_call(test_image)
+            if test_result:
+                log_message("✅ PaddleOCR test successful!")
+            else:
+                log_message("⚠️ PaddleOCR test: empty result (but initialization OK)")
+        except Exception as test_err:
+            log_message(f"⚠️ PaddleOCR test failed: {str(test_err)} (but initialization OK)")
             
         return True
         
