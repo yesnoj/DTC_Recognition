@@ -1,3 +1,64 @@
+import sys
+from types import ModuleType
+
+try:
+    import imghdr
+    print("✅ imghdr disponibile")
+except ImportError:
+    print("⚠️ imghdr non disponibile in Python 3.12, creando patch...")
+    
+    # Crea modulo imghdr fittizio con le funzioni necessarie
+    imghdr = ModuleType('imghdr')
+    
+    def what(file, h=None):
+        """
+        Versione semplificata di imghdr.what()
+        Ritorna il tipo di immagine basandosi sull'estensione
+        """
+        if hasattr(file, 'name'):
+            filename = file.name
+        elif isinstance(file, str):
+            filename = file
+        else:
+            return None
+            
+        filename = filename.lower()
+        if filename.endswith(('.jpg', '.jpeg')):
+            return 'jpeg'
+        elif filename.endswith('.png'):
+            return 'png'
+        elif filename.endswith('.gif'):
+            return 'gif'
+        elif filename.endswith('.bmp'):
+            return 'bmp'
+        elif filename.endswith('.tiff', '.tif'):
+            return 'tiff'
+        elif filename.endswith('.webp'):
+            return 'webp'
+        else:
+            return None
+    
+    def test_jpeg(h, f):
+        """Test per JPEG"""
+        if h[:4] == b'\xff\xd8\xff\xdb':
+            return 'jpeg'
+        return None
+    
+    def test_png(h, f):
+        """Test per PNG"""
+        if h.startswith(b'\x89PNG\r\n\x1a\n'):
+            return 'png'
+        return None
+    
+    # Aggiungi le funzioni al modulo
+    imghdr.what = what
+    imghdr.test_jpeg = test_jpeg
+    imghdr.test_png = test_png
+    
+    # Registra il modulo nel sistema
+    sys.modules['imghdr'] = imghdr
+    print("✅ imghdr patch creato con successo")
+
 import cv2
 import numpy as np
 import can
