@@ -1,0 +1,6 @@
+﻿DTC Source Controller;SPN ;FMI;Lamp ;Description
+0x00;190;0;2;Engine Over Speed Condition Detected
+0x00;18;14;1;Maximum Rail Pressure In Limp Home Mode Exceeded Limit
+0x00;27;20;1;EGR Valve Position In The Closed State Is Drifting Too Much
+0x00;97;31;2;Water In Fuel Detected Or Water In Fuel Circuit Failure
+0x00;97;12;2;Water In Fuel Sensor Or Sensor Circuit Failure
