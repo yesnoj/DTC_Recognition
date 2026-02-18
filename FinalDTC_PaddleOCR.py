@@ -375,7 +375,7 @@ def execute_dtc_acquisition_with_screenshot(expected_index):
     
     execute_dtc_acquisition_with_screenshot.last_processed_index = expected_index
     
-    log_message(f"Executing acquisition for DTC {expected_index+1} after 35s countdown")
+    log_message(f"Executing acquisition for DTC {expected_index+1} after 60s countdown")
     
     try:
         # Verifica che l'acquisizione sia ancora in corso
@@ -3499,7 +3499,7 @@ def perform_canalyzer_acquisition():
 def process_canalyzer_recognition():
     """
     Funzione callback che gestisce l'acquisizione dopo il timeout.
-    Chiamata dopo 35 secondi dal rilevamento di un nuovo messaggio.
+    Chiamata dopo 60 secondi dal rilevamento di un nuovo messaggio.
     """
     # Esegui l'acquisizione
     perform_canalyzer_acquisition()
@@ -3511,7 +3511,7 @@ def process_canalyzer_recognition():
 
 def schedule_canalyzer_acquisition():
     """Funzione intermedia che prepara e avvia l'acquisizione dopo il countdown"""
-    log_message("35 seconds elapsed - starting acquisition process")
+    log_message("60 seconds elapsed - starting acquisition process")
     
     # Aggiorna l'ultimo messaggio elaborato
     app.canalyzer_last_processed_message = app.message_to_process
@@ -3943,7 +3943,7 @@ def verify_recognition_results(spn_value, fmi_value, lamp_amber_status, lamp_red
 def wait_for_canalyzer_message():
     """
     Attende un messaggio DM1 in modalità Canalyzer.
-    Ignora messaggi da source address 0x27 e gestisce il countdown di 35 secondi.
+    Ignora messaggi da source address 0x27 e gestisce il countdown di 60 secondi.
     """
     try:
         # PGN fisso per DM1
@@ -4007,12 +4007,12 @@ def wait_for_canalyzer_message():
                             app.ecff_received = True
                             app.canalyzer_is_acquisition_scheduled = True
                             
-                            # Avvia il countdown di 35 secondi
-                            #log_message(">>> Starting 35 second countdown for recognition")
-                            root.after(0, lambda: start_recognition_countdown(35))
+                            # Avvia il countdown di 60 secondi
+                            #log_message(">>> Starting 60 second countdown for recognition")
+                            root.after(0, lambda: start_recognition_countdown(60))
                             
-                            # Programma l'acquisizione dopo 35 secondi
-                            root.after(35000, schedule_canalyzer_acquisition)
+                            # Programma l'acquisizione dopo 60 secondi
+                            root.after(60000, schedule_canalyzer_acquisition)
                         else:
                             log_message(f"Ignoring duplicate DM1 message (same as last processed)")
             
@@ -4395,86 +4395,60 @@ def parse_asc_file(file_path):
         return []
 
 def play_asc_trace(messages, dtc_frame):
-    """
-    Riproduce una traccia ASC inviando i messaggi CAN con i tempi appropriati
-    
-    Args:
-        messages: Lista di messaggi CAN parsati
-        dtc_frame: Riferimento al frame DTC per aggiornare l'UI
-    """
-    # Ottieni parametri CAN
     channel = can_channel_var.get()
     bitrate = int(can_bitrate_var.get())
     
     try:
         log_message(f"Starting ASC trace playback with {len(messages)} messages")
-        start_time = time.time()
-        last_msg_timestamp = messages[0]['timestamp'] if messages else 0
         
-        # Connetti al bus CAN
+        # Apri il bus UNA SOLA VOLTA
         bus = create_can_bus('vector', channel, bitrate)
-        
-        # Imposta flag di playback attivo
         app.asc_playback_active = True
         
-        msg_counter = 0
-        
-        # Ciclo principale di riproduzione
-        for msg_idx, msg_data in enumerate(messages):
-            # Controlla se il playback è stato interrotto
-            if not hasattr(app, 'asc_playback_active') or not app.asc_playback_active:
-                log_message("ASC trace playback stopped")
-                break
-                
-            # Calcola il tempo di attesa basato sui timestamp relativi
-            if msg_idx > 0:
-                wait_time = msg_data['timestamp'] - messages[msg_idx-1]['timestamp']
-                # Limita il tempo massimo di attesa a 1 secondo
-                #wait_time = min(max(0, wait_time), 0.5)
-
-                #if wait_time > 0.001:  # Ignora ritardi troppo piccoli
-                time.sleep(wait_time)
-
+        # Loop esterno per la riproduzione ciclica
+        while app.asc_playback_active:
+            msg_counter = 0
             
-            # Crea messaggio CAN
-            try:
-                can_msg = can.Message(
-                    arbitration_id=msg_data['arbitration_id'],
-                    data=msg_data['data'],
-                    is_extended_id=msg_data['is_extended_id'],
-                    dlc=len(msg_data['data'])
-                )
+            for msg_idx, msg_data in enumerate(messages):
+                if not app.asc_playback_active:
+                    break
+                    
+                # Timing tra messaggi
+                if msg_idx > 0:
+                    wait_time = msg_data['timestamp'] - messages[msg_idx-1]['timestamp']
+                    if wait_time > 0.001:
+                        time.sleep(wait_time)
                 
-                # Invia messaggio
-                bus.send(can_msg)
-                
-                # Log ogni 50 messaggi per non sovraccaricarlo
-                msg_counter += 1
-                if msg_counter % 50 == 0:
-                    # Formatta i dati in esadecimale
-                    hex_data = ' '.join(f'{b:02X}' for b in msg_data['data'])
-                    #log_message(f"ASC Msg #{msg_counter}: ID=0x{msg_data['arbitration_id']:X}, " + f"Data=[{hex_data}]")
-
-            except Exception as e:
-                log_message(f"Error sending CAN message: {str(e)}")
+                try:
+                    can_msg = can.Message(
+                        arbitration_id=msg_data['arbitration_id'],
+                        data=msg_data['data'],
+                        is_extended_id=msg_data['is_extended_id'],
+                        dlc=len(msg_data['data'])
+                    )
+                    bus.send(can_msg)
+                    msg_counter += 1
+                except Exception as e:
+                    log_message(f"Error sending CAN message: {str(e)}")
+            
+            log_message(f"ASC trace completed, sent {msg_counter} messages")
+            
+            # Se loop non è attivo, esci
+            if not (hasattr(app, 'asc_loop_playback') and app.asc_loop_playback):
+                break
+            
+            # Loop continuo: nessuna pausa, riparte subito!
+            log_message("Restarting ASC trace (seamless loop)")
         
-        log_message(f"ASC trace playback completed, sent {msg_counter} messages")
-        
-        # Se è stata completata normalmente e la riproduzione in loop è attiva, riavvia
-        if hasattr(app, 'asc_playback_active') and app.asc_playback_active and hasattr(app, 'asc_loop_playback') and app.asc_loop_playback:
-            log_message("Restarting ASC trace in loop mode")
-            threading.Thread(target=play_asc_trace, args=(messages, dtc_frame), daemon=True).start()
-        else:
-            # Reset flag
-            app.asc_playback_active = False
-            root.after(0, lambda: update_asc_player_ui(dtc_frame, False))
+        # Reset UI
+        app.asc_playback_active = False
+        root.after(0, lambda: update_asc_player_ui(dtc_frame, False))
             
     except Exception as e:
         log_message(f"Error in ASC trace playback: {str(e)}")
         app.asc_playback_active = False
         root.after(0, lambda: update_asc_player_ui(dtc_frame, False))
     finally:
-        # Chiudi la connessione CAN
         if 'bus' in locals() and bus:
             bus.shutdown()
 
@@ -4885,7 +4859,7 @@ class DTCAutoTestFrame(tk.Frame):
     def dm1_sender_thread(self):
         """
         Thread per l'invio di messaggi DM1 in modo ciclico solo in modalità DTC Test.
-        Invia lo stesso messaggio ogni secondo fino a scadere il timeout di 35 secondi.
+        Invia lo stesso messaggio ogni secondo fino a scadere il timeout di 60 secondi.
         """
         # Verifica che non sia in modalità Canalyzer
         if app.is_canalyzer_mode:
@@ -4935,18 +4909,18 @@ class DTCAutoTestFrame(tk.Frame):
                 # Imposta ecff_received per avviare il processo di acquisizione
                 app.ecff_received = True
                 
-                # Avvia il countdown di 35 secondi per il riconoscimento
-                log_message(">>> Starting 35 second countdown for recognition")
+                # Avvia il countdown di 60 secondi per il riconoscimento
+                log_message(">>> Starting 60 second countdown for recognition")
                 
-                # Programmiamo l'acquisizione dopo 35 secondi
-                root.after(35000, lambda idx=current_index: execute_dtc_acquisition_with_screenshot(idx))
+                # Programmiamo l'acquisizione dopo 60 secondi
+                root.after(60000, lambda idx=current_index: execute_dtc_acquisition_with_screenshot(idx))
                 
                 # Ciclo di invio del messaggio DM1 
                 start_time = time.time()
-                max_wait_time = 36  # Poco più di 35 secondi
+                max_wait_time = 61  # Poco più di 60 secondi
                 
                 # Punti di countdown da visualizzare
-                countdown_points = [35, 20, 10, 5, 4, 3, 2, 1]
+                countdown_points = [60, 20, 10, 5, 4, 3, 2, 1]
                 next_countdown_idx = 0
                 
                 while (app.dm1_thread_running and 
