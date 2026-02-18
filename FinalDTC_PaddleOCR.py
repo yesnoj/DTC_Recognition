@@ -75,6 +75,8 @@ import time
 from datetime import datetime
 from paddleocr import PaddleOCR
 
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 START_TIME = time.time()
 TIME_LOGS = []  # Lista per memorizzare i log temporanei
 
@@ -163,7 +165,9 @@ def create_mismatch_screenshots_folder():
     
     # Crea la cartella se non esiste
     if not os.path.exists(folder_name):
-        os.makedirs(folder_name)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        folder_name = os.path.join(script_dir, folder_name)
+        os.makedirs(folder_name, exist_ok=True)
     
     return folder_name
 

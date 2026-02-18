@@ -1,36 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, collect_data_files
 import os
 import site
 
-# Trova le librerie di sistema di Paddle
-def find_paddle_dlls():
-    """Trova tutte le DLL necessarie per Paddle"""
-    dll_paths = []
-    
-    # Percorsi comuni dove Paddle installa le DLL
-    search_paths = [
-        os.path.join(site.getsitepackages()[0], 'paddle', 'libs'),
-        os.path.join(site.getsitepackages()[0], 'paddle', 'fluid', 'core'),
-        os.path.join(site.getsitepackages()[0], 'Lib', 'site-packages', 'paddle', 'libs'),
-    ]
-    
-    dll_names = [
-        'mklml.dll', 'libiomp5md.dll', 'mkldnn.dll', 'openblas.dll',
-        'paddle_inference.dll', 'msvcp140.dll', 'vcruntime140.dll'
-    ]
-    
-    for search_path in search_paths:
-        if os.path.exists(search_path):
-            for dll_name in dll_names:
-                dll_path = os.path.join(search_path, dll_name)
-                if os.path.exists(dll_path):
-                    dll_paths.append((dll_path, '.'))
-                    print(f"✅ Found DLL: {dll_path}")
-    
-    return dll_paths
+# Funzione per trovare file specifici
+def find_package_files(package_name, file_patterns):
+    """Trova file specifici in un package"""
+    files = []
+    try:
+        for site_path in site.getsitepackages():
+            pkg_path = os.path.join(site_path, package_name)
+            if os.path.exists(pkg_path):
+                for root, dirs, filenames in os.walk(pkg_path):
+                    for pattern in file_patterns:
+                        for filename in filenames:
+                            if filename == pattern or filename.endswith(pattern):
+                                src = os.path.join(root, filename)
+                                dst = os.path.relpath(src, site_path)
+                                files.append((src, dst))
+                                print(f"✅ Found: {src} -> {dst}")
+    except Exception as e:
+        print(f"⚠️ Error finding package files: {e}")
+    return files
 
-# Raccogli moduli come prima
+# Raccogli PaddleOCR come prima
 try:
     paddleocr_datas, paddleocr_binaries, paddleocr_hiddenimports = collect_all('paddleocr')
     paddleocr_datas = [(src, dst) for src, dst in paddleocr_datas 
@@ -38,11 +31,22 @@ try:
 except:
     paddleocr_datas, paddleocr_binaries, paddleocr_hiddenimports = [], [], []
 
-# Aggiungi le DLL di Paddle
-paddle_dlls = find_paddle_dlls()
-paddleocr_binaries.extend(paddle_dlls)
+# Raccogli PaddleX e i suoi file di versione
+try:
+    paddlex_datas, paddlex_binaries, paddlex_hiddenimports = collect_all('paddlex')
+    paddleocr_datas.extend(paddlex_datas)
+    paddleocr_binaries.extend(paddlex_binaries)
+    paddleocr_hiddenimports.extend(paddlex_hiddenimports)
+    
+    # Aggiungi specificamente il file .version mancante
+    version_files = find_package_files('paddlex', ['.version', 'version.txt', 'VERSION'])
+    paddleocr_datas.extend(version_files)
+    
+except Exception as e:
+    print(f"⚠️ Could not collect paddlex: {e}")
+    paddlex_hiddenimports = []
 
-# Resto del codice scipy come prima
+# SciPy e altre dipendenze come prima
 try:
     scipy_datas, scipy_binaries, scipy_hiddenimports = collect_all('scipy')
     scipy_submodules = collect_submodules('scipy')
@@ -66,26 +70,55 @@ block_cipher = None
 a = Analysis(
     ['FinalDTC_PaddleOCR.py'],
     pathex=[],
-    binaries=paddleocr_binaries,  # Include le DLL
+    binaries=paddleocr_binaries,
     datas=paddleocr_datas,
     hiddenimports=[
-        # Tutti gli hiddenimports come prima
-        'paddleocr', 'paddleocr.paddleocr', 'paddleocr.tools',
-        'paddleocr.tools.infer', 'paddleocr.tools.infer.predict_system',
-        'paddleocr.tools.infer.predict_rec', 'paddleocr.tools.infer.predict_det',
-        'paddleocr.ppocr', 'paddleocr.ppocr.postprocess', 'paddleocr.ppocr.utils',
-        'paddleocr.ppocr.utils.utility', 'paddleocr.ppocr.data',
-        'paddleocr.ppocr.data.imaug', 'paddleocr.ppocr.data.imaug.ct_process',
-        'paddle', 'paddle.base', 'paddle.utils',
-        'numpy', 'cv2', 'PIL', 'PIL.Image', 'PIL.ImageTk',
+        # PaddleOCR e PaddleX
+        'paddleocr',
+        'paddleocr.paddleocr',
+        'paddleocr.tools',
+        'paddleocr.tools.infer',
+        'paddleocr.tools.infer.predict_system',
+        'paddleocr.tools.infer.predict_rec',
+        'paddleocr.tools.infer.predict_det',
+        'paddleocr.ppocr',
+        'paddleocr.ppocr.postprocess',
+        'paddleocr.ppocr.utils',
+        'paddleocr.ppocr.utils.utility',
+        'paddleocr.ppocr.data',
+        'paddleocr.ppocr.data.imaug',
+        'paddleocr.ppocr.data.imaug.ct_process',
+        'paddleocr._models',
+        'paddleocr._models.base',
+        'paddleocr._models.doc_img_orientation_classification',
+        'paddleocr._models._image_classification',
+        
+        # PaddleX
+        'paddlex',
+        'paddlex.version',
+        
+        # Paddle core
+        'paddle',
+        'paddle.base',
+        'paddle.utils',
+        
+        # Basic Python
+        'numpy',
+        'cv2',
+        'PIL', 'PIL.Image', 'PIL.ImageTk',
         'tkinter', 'tkinter.ttk', 'tkinter.filedialog',
         'can', 'can.interface', 'can.interfaces.vector',
         'threading', 'time', 'datetime', 'csv', 'os', 'sys', 're', 'math',
+        
+        # PaddleOCR dependencies
         'attrdict', 'beautifulsoup4', 'fire', 'fonttools', 'imgaug', 
         'lmdb', 'lxml', 'openpyxl', 'pdf2docx', 'premailer', 'pyclipper', 
         'PyMuPDF', 'pyyaml', 'rapidfuzz', 'shapely', 'tqdm', 'visualdl',
+        
+        # Cython minimal
         'cython', 'Cython', 'Cython.Build.Dependencies',
-    ] + paddleocr_hiddenimports + scipy_hiddenimports + skimage_hiddenimports,
+        
+    ] + paddleocr_hiddenimports + paddlex_hiddenimports + scipy_hiddenimports + skimage_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
